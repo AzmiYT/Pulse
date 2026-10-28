@@ -1,4 +1,5 @@
-import { FormEvent, useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
+import type { FormEvent } from 'react'
 import { Hash, Plus, LogOut, MessageCircle, Users, Send, Copy, Check, LoaderCircle, Radio, ArrowRight, ShieldCheck } from 'lucide-react'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
 import type { Session } from '@supabase/supabase-js'
@@ -93,7 +94,10 @@ export default function App() {
       if (cancelled) return
       setLoadingMessages(false)
       if (error) { setNotice(error.message); return }
-      setMessages((data || []) as ChatMessage[])
+      setMessages((data || []).map((message: any) => ({
+  ...message,
+  profiles: Array.isArray(message.profiles) ? message.profiles[0] : message.profiles,
+})) as ChatMessage[])
     }
     void loadMessages()
     if (!activeChannel) return () => { cancelled = true }

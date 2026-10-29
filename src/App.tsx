@@ -1,10 +1,10 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react'
 import type { FormEvent } from 'react'
-import { Hash, Plus, LogOut, MessageCircle, Users, Send, Copy, Check, LoaderCircle, Radio, ArrowRight, ShieldCheck, Smile, Pencil, Trash2, Reply, X, Paperclip, BarChart3, Upload, Search, Star, ChevronDown, FileText, Download, Bookmark, Pin, Mic, Square, Film, Bold, Italic, Underline, Code, Bell, Image as ImageIcon } from 'lucide-react'
+import { Hash, Plus, LogOut, MessageCircle, Users, Send, Copy, Check, LoaderCircle, Radio, ArrowRight, ShieldCheck, Smile, Pencil, Trash2, Reply, X, Paperclip, BarChart3, Upload, Search, Star, ChevronDown, FileText, Download, Bookmark, Pin, Mic, Square, Film, Bold, Italic, Underline, Code, Bell, Image as ImageIcon, Settings, Palette, UserRound, ServerCog } from 'lucide-react'
 import { isSupabaseConfigured, supabase } from './lib/supabase'
 import type { Session } from '@supabase/supabase-js'
 
-type Community = { id: string; name: string; invite_code: string; created_at: string; owner_id: string }
+type Community = { id: string; name: string; invite_code: string; created_at: string; owner_id: string; icon_url?: string | null; banner_url?: string | null; description?: string | null; theme?: string }
 type Channel = { id: string; community_id: string; name: string; created_at: string }
 type Reaction = { id: string; message_id: string; user_id: string; emoji: string }
 type PollOption = { id: string; poll_id: string; label: string; position: number }
@@ -47,6 +47,13 @@ export default function App() {
   const [email, setEmail] = useState(''); const [password, setPassword] = useState(''); const [username, setUsername] = useState('')
   const [authMode, setAuthMode] = useState<'signin' | 'signup'>('signup'); const [busy, setBusy] = useState(false); const [notice, setNotice] = useState('')
   const [communities, setCommunities] = useState<Community[]>([]); const [activeCommunity, setActiveCommunity] = useState<Community | null>(null)
+  const [profileModal, setProfileModal] = useState(false); const [serverSettingsModal, setServerSettingsModal] = useState(false)
+  const [profileDraft, setProfileDraft] = useState({ display_name: '', avatar_url: '', banner_url: '', bio: '', status_text: '', theme: 'midnight', dm_privacy: 'everyone', mention_notifications: true, dm_notifications: true })
+  const [serverDraft, setServerDraft] = useState({ name: '', description: '', icon_url: '', banner_url: '', theme: 'midnight' })
+  const [savingSettings, setSavingSettings] = useState(false)
+  const [dmInboxOpen, setDmInboxOpen] = useState(false); const [dmSearch, setDmSearch] = useState(''); const [dmUsers, setDmUsers] = useState<any[]>([])
+  const [dmConversations, setDmConversations] = useState<any[]>([]); const [activeDm, setActiveDm] = useState<any | null>(null)
+  const [dmMessages, setDmMessages] = useState<any[]>([]); const [dmDraft, setDmDraft] = useState(''); const [dmBusy, setDmBusy] = useState(false)
   const [channels, setChannels] = useState<Channel[]>([]); const [activeChannel, setActiveChannel] = useState<Channel | null>(null)
   const [messages, setMessages] = useState<ChatMessage[]>([]); const [draft, setDraft] = useState(''); const [editingId, setEditingId] = useState<string | null>(null)
   const [replyTo, setReplyTo] = useState<ChatMessage | null>(null); const [emojiOpen, setEmojiOpen] = useState(false); const [reactionPicker, setReactionPicker] = useState<string | null>(null)
@@ -154,6 +161,125 @@ export default function App() {
     const meta = session?.user.user_metadata
     return (meta?.username as string) || session?.user.email?.split('@')[0] || 'You'
   }, [session])
+
+  useEffect(() => {
+    if (!session?.user) return
+    let cancelled = false
+    void (async () => {
+      const { data } = await supabase.from('profiles').select('display_name,avatar_url,banner_url,bio,status_text,theme,dm_privacy,mention_notifications,dm_notifications').eq('id', session.user.id).maybeSingle()
+      if (cancelled) return
+      const meta = session.user.user_metadata || {}
+      if (!data) {
+        const defaultName = String(meta.display_name ?? meta.username ?? session.user.email?.split('@')[0] ?? 'User')
+        await supabase.from('profiles').insert({ id: session.user.id, username: String(meta.username ?? defaultName), display_name: defaultName }).then(() => undefined)
+      }
+      setProfileDraft({
+        display_name: data?.display_name ?? String(meta.display_name ?? meta.username ?? session.user.email?.split('@')[0] ?? ''),
+        avatar_url: data?.avatar_url ?? String(meta.avatar_url ?? ''),
+        banner_url: data?.banner_url ?? String(meta.banner_url ?? ''),
+        bio: data?.bio ?? String(meta.bio ?? ''),
+        status_text: data?.status_text ?? String(meta.status_text ?? ''),
+        theme: data?.theme ?? String(meta.theme ?? 'midnight'),
+        dm_privacy: data?.dm_privacy ?? 'everyone',
+        mention_notifications: data?.mention_notifications ?? true,
+        dm_notifications: data?.dm_notifications ?? true,
+      })
+    })()
+    return () => { cancelled = true }
+  }, [session?.user?.id])
+
+  async function loadDmInbox() {
+    if (!session?.user) return
+    setDmBusy(true)
+    try {
+      const { data: memberships, error } = await supabase.from('dm_participants').select('conversation_id,dm_conversations(id,name,is_group,last_message_at,created_by)').eq('user_id', session.user.id)
+      if (error) throw error
+      const conversations = (memberships || []).map((row: any) => row.dm_conversations).filter(Boolean).sort((a: any,b: any) => new Date(b.last_message_at).getTime()-new Date(a.last_message_at).getTime())
+      setDmConversations(conversations)
+    } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not load DMs. Run the social-features migration first.') }
+    finally { setDmBusy(false) }
+  }
+
+  async function searchDmUsers(value: string) {
+    setDmSearch(value)
+    if (!value.trim() || !session?.user) { setDmUsers([]); return }
+    const { data, error } = await supabase.from('profiles').select('id,username,display_name,avatar_url,status_text').neq('id', session.user.id).or(`username.ilike.%${value.trim().replace(/[,%()]/g,'')}%,display_name.ilike.%${value.trim().replace(/[,%()]/g,'')}%`).limit(8)
+    if (error) { setNotice('Could not search users. Make sure the social-features migration is installed.'); return }
+    setDmUsers(data || [])
+  }
+
+  async function startDm(user: any) {
+    if (!session?.user) return
+    setDmBusy(true)
+    try {
+      const { data: conversation, error: conversationError } = await supabase.from('dm_conversations').insert({ created_by: session.user.id, is_group: false }).select('*').single()
+      if (conversationError) throw conversationError
+      const { error: membersError } = await supabase.from('dm_participants').insert([{ conversation_id: conversation.id, user_id: session.user.id }, { conversation_id: conversation.id, user_id: user.id }])
+      if (membersError) throw membersError
+      setActiveDm({ ...conversation, otherUser: user }); setDmMessages([]); setDmUsers([]); setDmSearch('')
+      await loadDmInbox()
+    } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not start DM.') }
+    finally { setDmBusy(false) }
+  }
+
+  async function openDm(conversation: any) {
+    if (!session?.user) return
+    setActiveDm(conversation); setDmBusy(true)
+    try {
+      const { data: rows, error } = await supabase.from('dm_messages').select('id,conversation_id,sender_id,content,created_at,edited_at').eq('conversation_id', conversation.id).order('created_at', { ascending: true }).limit(200)
+      if (error) throw error
+      setDmMessages(rows || [])
+      const { data: members } = await supabase.from('dm_participants').select('user_id').eq('conversation_id', conversation.id).neq('user_id', session.user.id).limit(1)
+      if (members?.[0]) {
+        const { data: profile } = await supabase.from('profiles').select('id,username,display_name,avatar_url,status_text').eq('id', members[0].user_id).maybeSingle()
+        setActiveDm({ ...conversation, otherUser: profile || null })
+      }
+    } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not load DM messages.') }
+    finally { setDmBusy(false) }
+  }
+
+  async function sendDm(event: FormEvent) {
+    event.preventDefault()
+    if (!session?.user || !activeDm || !dmDraft.trim()) return
+    const content = dmDraft.trim(); setDmDraft('')
+    const { data, error } = await supabase.from('dm_messages').insert({ conversation_id: activeDm.id, sender_id: session.user.id, content }).select('id,conversation_id,sender_id,content,created_at,edited_at').single()
+    if (error) { setDmDraft(content); setNotice(error.message); return }
+    setDmMessages(current => [...current, data])
+    await supabase.from('dm_conversations').update({ last_message_at: data.created_at }).eq('id', activeDm.id)
+    await loadDmInbox()
+  }
+
+  async function saveProfile(event: FormEvent) {
+    event.preventDefault()
+    if (!session?.user) return
+    setSavingSettings(true); setNotice('')
+    try {
+      const payload = { id: session.user.id, username: myUsername, ...profileDraft, updated_at: new Date().toISOString() }
+      const { error } = await supabase.from('profiles').upsert(payload, { onConflict: 'id' })
+      if (error) throw error
+      const { error: authError } = await supabase.auth.updateUser({ data: { ...session.user.user_metadata, display_name: profileDraft.display_name.trim(), avatar_url: profileDraft.avatar_url.trim(), banner_url: profileDraft.banner_url.trim(), bio: profileDraft.bio.trim(), status_text: profileDraft.status_text.trim(), theme: profileDraft.theme } })
+      if (authError) throw authError
+      const { data: refreshed } = await supabase.auth.getSession()
+      if (refreshed.session) setSession(refreshed.session)
+      setProfileModal(false); setNotice('Profile settings saved.')
+    } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not save profile. Run the social-features migration first.') }
+    finally { setSavingSettings(false) }
+  }
+
+  async function saveServerSettings(event: FormEvent) {
+    event.preventDefault()
+    if (!activeCommunity || !session?.user) return
+    if (activeCommunity.owner_id !== session.user.id) { setNotice('Only the community owner can edit these settings.'); return }
+    setSavingSettings(true); setNotice('')
+    try {
+      const { data, error } = await supabase.from('communities').update({ name: serverDraft.name.trim(), description: serverDraft.description.trim(), icon_url: serverDraft.icon_url.trim() || null, banner_url: serverDraft.banner_url.trim() || null, theme: serverDraft.theme }).eq('id', activeCommunity.id).select('*').single()
+      if (error) throw error
+      setActiveCommunity(data as Community)
+      setCommunities(current => current.map(c => c.id === activeCommunity.id ? data as Community : c))
+      setServerSettingsModal(false); setNotice('Community settings saved.')
+    } catch (error) { setNotice(error instanceof Error ? error.message : 'Could not save community settings. Run the social-features migration first.') }
+    finally { setSavingSettings(false) }
+  }
 
   async function handleAuth(event: FormEvent) {
     event.preventDefault(); setBusy(true); setNotice('')
@@ -344,10 +470,10 @@ export default function App() {
       <p className="auth-switch">{authMode === 'signup' ? 'Already have an account?' : "Don't have an account?"} <button className="text-button" onClick={() => { setAuthMode(authMode === 'signup' ? 'signin' : 'signup'); setNotice('') }}>{authMode === 'signup' ? 'Sign in' : 'Create one'}</button></p><p className="auth-legal"><ShieldCheck size={14}/> Your account is stored securely with Supabase Auth.</p></div></section></main>
   )
   return (
-    <main className="app-shell"><aside className="server-rail"><button className="rail-logo" title="Pulse home"><MessageCircle size={22}/></button><div className="rail-divider"/>{communities.map(c => <button key={c.id} className={`server-icon ${activeCommunity?.id === c.id ? 'selected' : ''}`} title={c.name} onClick={() => setActiveCommunity(c)}>{initials(c.name)}</button>)}<button className="server-add" title="Create community" onClick={() => setShowCreate(true)}><Plus size={22}/></button><button className="server-add join-add" title="Join with invite code" onClick={() => setShowJoin(true)}><ArrowRight size={18}/></button><div className="rail-bottom"><div className="avatar tiny">{initials(myUsername)}</div></div></aside>
-      <aside className="channel-sidebar"><div className="workspace-head"><div className="workspace-title">{activeCommunity?.name || 'Your communities'}</div><button className="icon-button" title="Create community" onClick={() => setShowCreate(true)}><Plus size={17}/></button></div>
+    <main className="app-shell"><aside className="server-rail"><button className="rail-logo" title="Pulse home"><MessageCircle size={22}/></button><div className="rail-divider"/>{communities.map(c => <button key={c.id} className={`server-icon ${activeCommunity?.id === c.id ? 'selected' : ''}`} title={c.name} onClick={() => setActiveCommunity(c)}> {c.icon_url ? <img className="server-icon-image" src={c.icon_url} alt="" onError={e => { e.currentTarget.style.display = 'none' }}/> : initials(c.name)}</button>)}<button className="server-add" title="Create community" onClick={() => setShowCreate(true)}><Plus size={22}/></button><button className="server-add join-add" title="Join with invite code" onClick={() => setShowJoin(true)}><ArrowRight size={18}/></button><div className="rail-bottom"><div className="avatar tiny">{initials(myUsername)}</div></div></aside>
+      <aside className="channel-sidebar"><div className="workspace-head"><div className="workspace-title">{activeCommunity?.name || 'Your communities'}</div><button className="icon-button" title="Direct messages" onClick={() => { setDmInboxOpen(true); void loadDmInbox() }}><MessageCircle size={16}/></button>{activeCommunity && activeCommunity.owner_id === session?.user.id && <button className="icon-button" title="Customize community" onClick={() => { setServerDraft({ name: activeCommunity.name, description: activeCommunity.description || '', icon_url: activeCommunity.icon_url || '', banner_url: activeCommunity.banner_url || '', theme: activeCommunity.theme || 'midnight' }); setServerSettingsModal(true) }}><ServerCog size={16}/></button>}<button className="icon-button" title="Create community" onClick={() => setShowCreate(true)}><Plus size={17}/></button></div>
         {activeCommunity ? <><button className="invite-card" onClick={() => void copyInvite()}><div><span className="invite-title">Invite friends</span><span className="invite-subtitle">{copied ? 'Invite code copied!' : `Code: ${activeCommunity.invite_code}`}</span></div>{copied ? <Check size={16}/> : <Copy size={16}/>}</button><div className="section-label">COMMUNITY CHANNELS</div><div className="channel-list">{channels.map(c => <button key={c.id} className={`channel-item ${activeChannel?.id === c.id ? 'active' : ''}`} onClick={() => setActiveChannel(c)}><Hash size={17}/><span>{c.name}</span></button>)}</div><div className="sidebar-empty">{channels.length === 0 ? 'No channels yet.' : `${channels.length} channel${channels.length === 1 ? '' : 's'}`}</div></> : <div className="empty-workspace"><div className="empty-icon"><Users size={22}/></div><strong>Find your people</strong><p>Create a community or join one with an invite code.</p><button className="primary-button small" onClick={() => setShowCreate(true)}><Plus size={15}/> Create community</button><button className="secondary-button small" onClick={() => setShowJoin(true)}>Join a community</button></div>}
-        <div className="user-card"><div className="avatar">{initials(myUsername)}</div><div className="user-details"><strong>{myUsername}</strong><span>Online</span></div><button className="icon-button" title="Sign out" onClick={() => void supabase.auth.signOut()}><LogOut size={17}/></button></div></aside>
+        <div className="user-card"><div className="avatar">{profileDraft.avatar_url ? <img src={profileDraft.avatar_url} alt="" onError={e => { e.currentTarget.style.display = 'none' }}/> : initials(profileDraft.display_name || myUsername)}</div><div className="user-details"><strong>{profileDraft.display_name || myUsername}</strong><span>{profileDraft.status_text || 'Online'}</span></div><button className="icon-button" title="Profile and settings" onClick={() => setProfileModal(true)}><Settings size={16}/></button><button className="icon-button" title="Sign out" onClick={() => void supabase.auth.signOut()}><LogOut size={17}/></button></div></aside>
       <section className="chat-panel"><header className="chat-header"><div className="channel-heading"><div className="hash-large"><Hash size={22}/></div><div><h1>{activeChannel?.name || 'Welcome'}</h1><p>{activeCommunity ? activeCommunity.name : 'Your communities, all in one place'}</p></div></div><div className="chat-header-tools">{searchOpen && <input className="message-search-input" value={messageSearch} onChange={e => setMessageSearch(e.target.value)} placeholder="Search this channel…" aria-label="Search messages" autoFocus/>}<button className="icon-button" title="Search messages" onClick={() => { setSearchOpen(v => !v); if (searchOpen) setMessageSearch('') }}><Search size={17}/></button><button className="icon-button" title="Request notifications" onClick={() => { if ('Notification' in window) void Notification.requestPermission().then(permission => setNotice(permission === 'granted' ? 'Browser notifications enabled.' : 'Notifications were not enabled.')) }}><Bell size={16}/></button><div className="header-status"><span className="status-dot"/><span>Live chat</span></div></div></header>
         {activeChannel ? <><div className={`messages-area ${dragOver ? 'drag-over' : ''}`} onDragOver={e => { e.preventDefault(); setDragOver(true) }} onDragLeave={e => { if (e.currentTarget === e.target) setDragOver(false) }} onDrop={e => { e.preventDefault(); setDragOver(false); const file = e.dataTransfer.files?.[0]; if (file) void uploadAttachment(file) }}>
           {dragOver && <div className="drop-overlay"><Upload size={24}/> Drop a file to send it</div>}
@@ -384,6 +510,9 @@ export default function App() {
           </form>
         </> : <div className="empty-chat"><div className="empty-icon"><MessageCircle size={28}/></div><h2>Make some noise.</h2><p>Create a community or join one to start chatting.</p><button className="primary-button small" onClick={() => setShowCreate(true)}><Plus size={15}/> Create community</button></div>}
       </section>
+      {dmInboxOpen && <div className="modal-backdrop dm-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) { setDmInboxOpen(false); setActiveDm(null) } }}><section className="modal dm-modal"><div className="dm-modal-head"><div><h2>Direct messages</h2><p>Private conversations on Pulse.</p></div><button type="button" className="icon-button" aria-label="Close DMs" onClick={() => { setDmInboxOpen(false); setActiveDm(null) }}><X size={18}/></button></div><div className="dm-layout"><aside className="dm-list"><label>Find people<input value={dmSearch} onChange={e => void searchDmUsers(e.target.value)} placeholder="Search username…"/></label>{dmUsers.map(user => <button type="button" className="dm-person" key={user.id} onClick={() => void startDm(user)}><span className="avatar">{user.avatar_url ? <img src={user.avatar_url} alt=""/> : initials(user.display_name || user.username || 'U')}</span><span><strong>{user.display_name || user.username || 'Pulse user'}</strong><small>@{user.username || 'user'}</small></span><Plus size={15}/></button>)}{dmSearch.trim() && dmUsers.length === 0 && <p className="dm-muted">No matching profiles.</p>}<div className="dm-conversation-label">RECENT CONVERSATIONS</div>{dmConversations.map(conversation => <button type="button" className={`dm-person ${activeDm?.id === conversation.id ? 'selected' : ''}`} key={conversation.id} onClick={() => void openDm(conversation)}><span className="avatar"><MessageCircle size={16}/></span><span><strong>{conversation.name || 'Direct message'}</strong><small>{new Date(conversation.last_message_at).toLocaleDateString()}</small></span></button>)}{dmBusy && <p className="dm-muted">Loading…</p>}{!dmBusy && dmConversations.length === 0 && !dmSearch.trim() && <p className="dm-muted">No DMs yet. Search for a user above to start one.</p>}</aside><section className="dm-chat">{activeDm ? <><div className="dm-chat-title"><strong>{activeDm.otherUser?.display_name || activeDm.otherUser?.username || activeDm.name || 'Direct message'}</strong><small>{activeDm.otherUser?.status_text || 'Private conversation'}</small></div><div className="dm-message-list">{dmMessages.map(message => <div className={`dm-message ${message.sender_id === session?.user.id ? 'mine' : ''}`} key={message.id}><span>{message.sender_id === session?.user.id ? 'You' : (activeDm.otherUser?.display_name || activeDm.otherUser?.username || 'User')}</span><p>{message.content}</p><small>{timeLabel(message.created_at)}</small></div>)}{dmMessages.length === 0 && <p className="dm-muted centered">Say hello 👋</p>}</div><form className="dm-composer" onSubmit={sendDm}><input value={dmDraft} onChange={e => setDmDraft(e.target.value)} placeholder="Message privately…" maxLength={4000}/><button className="primary-button" disabled={!dmDraft.trim()}><Send size={15}/></button></form></> : <div className="dm-empty"><MessageCircle size={26}/><strong>Choose a conversation</strong><p>Search for a person to start a DM.</p></div>}</section></div></section></div>}
+      {profileModal && <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setProfileModal(false) }}><form className="modal profile-settings-modal" onSubmit={saveProfile}><div className="modal-icon"><UserRound size={22}/></div><h2>Profile & settings</h2><p>Customize how people see you on Pulse.</p><label>Display name<input value={profileDraft.display_name} onChange={e => setProfileDraft(v => ({...v,display_name:e.target.value}))} maxLength={40} placeholder={myUsername}/></label><label>Avatar image URL<input type="url" value={profileDraft.avatar_url} onChange={e => setProfileDraft(v => ({...v,avatar_url:e.target.value}))} placeholder="https://…"/></label><label>Profile banner URL<input type="url" value={profileDraft.banner_url} onChange={e => setProfileDraft(v => ({...v,banner_url:e.target.value}))} placeholder="https://…"/></label><label>About me<textarea value={profileDraft.bio} onChange={e => setProfileDraft(v => ({...v,bio:e.target.value}))} maxLength={240} rows={3} placeholder="A little about you…"/></label><label>Status<input value={profileDraft.status_text} onChange={e => setProfileDraft(v => ({...v,status_text:e.target.value}))} maxLength={80} placeholder="What are you up to?"/></label><label>Profile theme<select value={profileDraft.theme} onChange={e => setProfileDraft(v => ({...v,theme:e.target.value}))}><option value="midnight">Midnight</option><option value="violet">Violet</option><option value="ocean">Ocean</option><option value="forest">Forest</option><option value="sunset">Sunset</option></select></label><label>Who can DM you?<select value={profileDraft.dm_privacy} onChange={e => setProfileDraft(v => ({...v,dm_privacy:e.target.value}))}><option value="everyone">Everyone</option><option value="members">People in my communities</option><option value="nobody">Nobody</option></select></label><div className="settings-checks"><label><input type="checkbox" checked={profileDraft.mention_notifications} onChange={e => setProfileDraft(v => ({...v,mention_notifications:e.target.checked}))}/> Mention notifications</label><label><input type="checkbox" checked={profileDraft.dm_notifications} onChange={e => setProfileDraft(v => ({...v,dm_notifications:e.target.checked}))}/> DM notifications</label></div><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setProfileModal(false)}>Cancel</button><button className="primary-button" disabled={savingSettings}>{savingSettings ? 'Saving…' : 'Save settings'}</button></div></form></div>}
+      {serverSettingsModal && <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setServerSettingsModal(false) }}><form className="modal server-settings-modal" onSubmit={saveServerSettings}><div className="modal-icon"><ServerCog size={22}/></div><h2>Customize community</h2><p>Change the name, look, and description of your community.</p><label>Community name<input value={serverDraft.name} onChange={e => setServerDraft(v => ({...v,name:e.target.value}))} maxLength={48} required/></label><label>Description<input value={serverDraft.description} onChange={e => setServerDraft(v => ({...v,description:e.target.value}))} maxLength={180} placeholder="What's this community about?"/></label><label>Icon image URL<input type="url" value={serverDraft.icon_url} onChange={e => setServerDraft(v => ({...v,icon_url:e.target.value}))} placeholder="https://…"/></label><label>Banner image URL<input type="url" value={serverDraft.banner_url} onChange={e => setServerDraft(v => ({...v,banner_url:e.target.value}))} placeholder="https://…"/></label><label>Community theme<select value={serverDraft.theme} onChange={e => setServerDraft(v => ({...v,theme:e.target.value}))}><option value="midnight">Midnight</option><option value="violet">Violet</option><option value="ocean">Ocean</option><option value="forest">Forest</option><option value="sunset">Sunset</option></select></label><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setServerSettingsModal(false)}>Cancel</button><button className="primary-button" disabled={savingSettings || !serverDraft.name.trim()}>{savingSettings ? 'Saving…' : 'Save community'}</button></div></form></div>}
       {imageViewer && <div className="image-viewer" role="dialog" aria-modal="true" onClick={() => setImageViewer(null)}><button type="button" aria-label="Close image viewer" onClick={() => setImageViewer(null)}><X size={22}/></button><img src={imageViewer} alt="Expanded attachment" onClick={e => e.stopPropagation()}/></div>}
       {notice && <button className="toast" onClick={() => setNotice('')}>{notice} <span>×</span></button>}
       {showPollModal && <div className="modal-backdrop" onMouseDown={e => { if (e.target === e.currentTarget) setShowPollModal(false) }}><form className="modal poll-modal" onSubmit={createPoll}><div className="modal-icon"><BarChart3 size={22}/></div><h2>Create a poll</h2><p>Ask your community a question. Members can vote and change their vote.</p><label>Question<input autoFocus value={pollQuestion} onChange={e => setPollQuestion(e.target.value)} placeholder="What should we play?" maxLength={240} required/></label><div className="poll-draft-options"><span className="field-label">Answer options</span>{pollOptionsDraft.map((option, index) => <input key={index} value={option} onChange={e => setPollOptionsDraft(current => current.map((v, i) => i === index ? e.target.value : v))} placeholder={`Option ${index + 1}`} maxLength={100} required={index < 2}/>)}</div><button type="button" className="secondary-button" disabled={pollOptionsDraft.length >= 10} onClick={() => setPollOptionsDraft(current => [...current, ''])}><Plus size={14}/> Add option</button><div className="modal-actions"><button type="button" className="secondary-button" onClick={() => setShowPollModal(false)}>Cancel</button><button className="primary-button" disabled={busy || !pollQuestion.trim() || pollOptionsDraft.filter(v => v.trim()).length < 2}>{busy ? 'Creating…' : 'Create poll'}</button></div></form></div>}
